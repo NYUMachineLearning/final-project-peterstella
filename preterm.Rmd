@@ -1,0 +1,1093 @@
+---
+title: "Preterm Exploratory"
+author: "Peter Stella"
+date: "10/7/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(ROCR)
+library(pROC)
+library(MASS)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(ggfortify)
+library(glmnet)
+library(e1071)
+library(mlbench)
+library(tidyverse)
+library(ISLR)
+library(tree)
+library(randomForest)
+library(gbm)
+library(ranger)
+library(Hmisc)
+```
+
+
+```{r}
+
+#Load data and modify column names
+load('C:\\Users\\pstel\\OneDrive\\Desktop\\MachineLearning2019\\Preterm Birth\\HTA20_RMA.RData')
+ano=read.csv("C:\\Users\\pstel\\OneDrive\\Desktop\\MachineLearning2019\\Preterm Birth\\anoSC1_v11_nokey.csv",stringsAsFactors = FALSE)
+data_df <- as.data.frame(eset_HTA20)
+annotations <- ano #%>% column_to_rownames(., var= "SampleID")
+data_transposed <- as.data.frame(t(data_df))
+data_transposed <- rownames_to_column(data_transposed)
+data_transposed <- dplyr::rename(data_transposed, SampleID = rowname)
+data_annotated <- inner_join(annotations,data_transposed)
+data_2rownames <- data_annotated %>% column_to_rownames(.,var = "SampleID")
+data_train <- filter(data_annotated, Train == 1)  
+data_test <- filter(data_annotated, Train == 0)
+data_train_rownames <- filter(data_2rownames, Train == 1)  
+data_test_rownames <- filter(data_2rownames, Train == 0)  
+
+# select only data from first batch
+#data_train1 <- data_train[1:335,]
+data_train1 <- data_train
+data_train1 <- data_train1 %>% dplyr::select(-"Batch",-"Set",-"Train", -"Platform")
+data_train1 <- data_train1 %>% mutate(term = ifelse(GA<37,0,1))
+data_train1 <- data_train1 %>% dplyr::select("SampleID", "GA", "term", everything())
+data_train_term <- data_train1 %>% dplyr::select(-"GA")
+data_train_GA <- data_train1 %>% dplyr::select(-"term")
+
+#data_train_rownames1 <- data_train_rownames[1:335,]
+data_train_rownames1 <- data_train_rownames
+data_train_rownames1 <- data_train_rownames1 %>% dplyr::select(-"Batch",-"Set",-"Train", -"Platform")
+data_train_rownames1 <- data_train_rownames1 %>% mutate(term = ifelse(GA<37,0,1))
+data_train_rownames1 <- data_train_rownames1 %>% dplyr::select( "GA", "term", everything())
+data_train_rownames_term <- data_train_rownames1 %>% dplyr::select(-"GA")
+data_train_rownames_GA <- data_train_rownames1 %>% dplyr::select(-"term")
+
+#ctrl_test <- trainControl(method = "boot", 25)
+#test_lasso <- train(GA~ ., data =data_train_GA, method = 'lasso', trControl= ctrl_test)
+```
+
+
+
+
+```{r}
+data_test_rownames1 <- data_test_rownames %>% dplyr::select(-"Batch",-"Set",-"Train", -"Platform")
+data_test_rownames1 <- data_test_rownames1 %>% mutate(term = ifelse(GA<37,0,1))
+data_test_rownames1 <- data_test_rownames1 %>% dplyr::select( "GA", "term", everything())
+data_test_rownames_term <- data_test_rownames1 %>% dplyr::select(-"GA")
+data_test_rownames_GA <- data_test_rownames1 %>% dplyr::select(-"term")
+```
+
+
+```{r}
+data_test_rownames_GA_label <- data_test_rownames_GA %>% select("GA")
+data_test_rownames_term_label <-data_test_rownames_term %>% select("term")
+data_test_rownames_GA_no_label <- data_test_rownames_GA %>% select(-"GA")
+data_test_rownames_term_no_label <- data_test_rownames_term %>% select(-"term")
+GA_test_no_lab_mat <- data.matrix(data_test_rownames_GA_no_label, rownames.force = TRUE)
+GA_test_lab_mat <- data.matrix(data_test_rownames_GA_label, rownames.force = TRUE)
+```
+
+
+
+```{r}
+#convert numeric scoring to factor for term
+data_train_term <- data_train_term %>% mutate(term = ifelse(term==1, "yes", "no"))
+data_train_term$term <- as.factor(data_train_term$term)
+
+```
+
+
+Now we perform feature selection with Fselector, FESER, and PCA
+#PCA
+
+```{r}
+data_pca_GA <- data_train1 %>% dplyr::select(-"SampleID", -"GA", -"term")
+pca_GA <- prcomp(data_pca_GA, scale. = TRUE)
+```
+
+```{r}
+fviz_eig(pca_GA, ncp=25)
+```
+
+#FSelector
+
+```{r}
+lct <- linear.correlation(GA~., data_train_rownames_GA)
+chi <-chi.squared(term~., data_train_rownames_term)
+```
+
+
+
+FESER
+#needs matrices with separate objects so 
+
+```{r}
+data_train_rownames_GA_label <- data_train_rownames_GA %>% select("GA")
+data_train_rownames_term_label <-data_train_rownames_term %>% select("term")
+data_train_rownames_GA_no_label <- data_train_rownames_GA %>% select(-"GA")
+data_train_rownames_term_no_label <- data_train_rownames_term %>% select(-"term")
+GA_no_lab_mat <- data.matrix(data_train_rownames_GA_no_label, rownames.force = TRUE)
+GA_lab_mat <- data.matrix(data_train_rownames_GA_label, rownames.force = TRUE)
+GA_no_lab_mat2 <- GA_no_lab_mat[,1:32800]
+
+```
+
+
+```{r}
+ridge_fit_cv_nofilt = cv.glmnet(x = scale(GA_no_lab_mat2), y = GA_lab_mat, alpha = 0)
+
+```
+
+```{r}
+ridge_fit_nofilt  <-  glmnet(x = scale(GA_no_lab_mat2), y = GA_lab_mat, alpha = 0)
+```
+
+
+```{r}
+ridge_fit_cv_nofilt
+```
+
+
+```{r}
+sqrt(ridge_fit_cv_nofilt$cvm[which.min(abs(ridge_fit_cv_nofilt$lambda - ridge_fit_cv_nofilt$lambda.1se))])
+
+```
+
+
+```{r}
+feser_cor <- as.data.frame(filter.corr(features= GA_no_lab_mat, class = GA_lab_mat, mincorr = 0.1))
+
+
+```
+
+
+```{r}
+inf_gain_filt <- filter.gain.inf(features = GA_no_lab_mat, class = GA_lab_mat, zero.gain.out = TRUE)
+```
+
+
+Feature selection performed: 
+Now need build datasets. Broadly, we take our features and combine with the original data
+```{r}
+data_train_GA_fescor <- data.frame(data_train_GA$GA,feser_cor)
+data_train_GA_fescor <- dplyr::rename(data_train_GA_fescor, GA= data_train_GA.GA )
+```
+
+
+
+
+
+```{r}
+#inf_features <- colnames(inf_gain_filt)
+#data_train_GA_inf_top10 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= inf_features))
+#data_train_GA_inf_top10 <- dplyr::rename(data_train_GA_inf_top10, GA = "dat in_term", select= inf_features)
+
+```
+
+
+
+#From F selector
+
+
+```{r}
+ggplot(lctest_ordered_row,aes(x=rowname, y= attr_importance))+geom_point()+xlim(0,30000)
+  
+  
+#scale_x_continuous(limits=c(0, 10))
+```
+
+
+
+
+```{r}
+lct <- rownames_to_column(lct)
+lct <- dplyr::rename(lct, gene = rowname)
+lctest_ordered <- lct %>% arrange(desc(attr_importance))
+lct_top100 <- lctest_ordered[1:100,]
+lct_top200 <- lctest_ordered[1:200,]
+lct_top500 <- lctest_ordered[1:500,]
+lct_top1000 <- lctest_ordered[1:1000,]
+```
+
+ordered lists of genes, subsets of database by tops 
+
+```{r}
+lct_100 <- lct_top100$gene
+lct_200 <- lct_top200$gene
+lct_500 <- lct_top500$gene
+lct_1000 <- lct_top1000$gene
+
+data_train_GA_lc_top100 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= lct_100))
+data_train_GA_lc_top100 <- dplyr::rename(data_train_GA_lc_top100, GA= data_train_GA.GA )
+data_train_GA_lc_top500 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= lct_500))
+data_train_GA_lc_top500 <- dplyr::rename(data_train_GA_lc_top500, GA= data_train_GA.GA )
+data_train_GA_lc_top1000 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= lct_1000))
+data_train_GA_lc_top1000 <- dplyr::rename(data_train_GA_lc_top1000, GA= data_train_GA.GA )
+
+
+```
+
+
+```{r}
+#chi <- rownames_to_column(chi)
+##chi <- dplyr::rename(chi, gene = rowname)
+#chitest_ordered <- chi %>% arrange(desc(attr_importance))
+#chi_top100 <- chitest_ordered[1:100,]
+#chi_top200 <- chitest_ordered[1:200,]
+#chi_top500 <- chitest_ordered[1:500,]
+#chi_top1000 <- chitest_ordered[1:1000,]
+```
+
+
+```{r}
+#chi_100 <- chi_top100$gene
+#chi_200 <- chi_top200$gene
+#chi_500 <- chi_top500$gene
+#chi_1000 <- chi_top1000$gene
+
+#data_train_term_chi_top100 <- data.frame(data_train_term$term, subset(data_train_term, select= chi_100))
+#data_train_term_chi_top100 <- dplyr::rename(data_train_term_chi_top100, term= data_train_term.term )
+#data_train_term_chi_top500 <- data.frame(data_train_term$term, subset(data_train_term, select= chi_500))
+#data_train_term_chi_top500 <- dplyr::rename(data_train_term_chi_top500, term= data_train_term.term )
+#data_train_term_chi_top1000 <- data.frame(data_train_term$term, subset(data_train_term, select= chi_1000))
+#data_train_term_chi_top1000 <- dplyr::rename(data_train_term_chi_top1000, term= data_train_term.term )
+
+```
+
+From PCA
+
+```{r}
+pca_5 <- pca_GA$x[,1:5]
+pca_25 <- pca_GA$x[,1:25]
+pca_100 <- pca_GA$x[,1:100]
+```
+
+```{r}
+data_train_GA_pca_5 <- as.data.frame(cbind(data_train_GA$GA, pca_5))
+data_train_GA_pca_5 <- dplyr::rename(data_train_GA_pca_5, GA = V1)
+
+data_train_GA_pca_25 <- as.data.frame(cbind(data_train_GA$GA, pca_25))
+data_train_GA_pca_25 <- dplyr::rename(data_train_GA_pca_25, GA = V1)
+
+data_train_GA_pca_100 <- as.data.frame(cbind(data_train_GA$GA, pca_100))
+data_train_GA_pca_100 <- dplyr::rename(data_train_GA_pca_100, GA = V1)
+
+```
+
+```{r}
+pca_GA
+```
+
+
+#PCA
+
+1. Regression against age
+
+# Caret control funtions: 
+
+```{r}
+reg_control <-  trainControl(method = "repeatedcv", repeats = 5, number = 5)
+class_control <- trainControl(method= "repeatedcv", repeats = 5, number = 5, classProbs = T, savePredictions = T)
+```
+
+#Correlation filter from FSelector
+```{r}
+FS_reg_100 <- caret::train(GA~., data=data_train_GA_lc_top100, method = "glm", family = "gaussian", trControl= reg_control)
+FS_reg_500 <- caret::train(GA~., data=data_train_GA_lc_top500, method = "glm", family = "gaussian", trControl= reg_control)
+```
+WRONG
+
+#Feser correlation
+```{r}
+Feser_reg_cor <- caret::train(GA~., data=data_train_GA_fescor, method = "glm", family = "gaussian", trControl= reg_control)
+```
+
+
+
+#Chi squared
+```{r}
+term_chi100_class <- caret::train(term~., data=data_train_term_chi_top100, method= "glm", family= "binomial", trControl = class_control)
+term_chi500_class <- caret::train(term~., data=data_train_term_chi_top500, method= "glm", family= "binomial", trControl = class_control)
+
+```
+#information loss
+```{r}
+#inf_reg <- caret::train(GA~., data=data_train_GA_inf_top10, method = "glm", family = "gaussian", trControl= reg_control)
+#inf_class <- caret::train(term~., data=data_train_term_inf_top10, method = "glm", family = "binomial", trControl= class_control)
+```
+#PCA
+```{r}
+pca_reg_5 <- caret::train(GA~., data=data_train_GA_pca_5, method = "glm", family = "gaussian", trControl= reg_control)
+pca_reg_25<- caret::train(GA~., data=data_train_GA_pca_25, method = "glm", family = "gaussian", trControl= reg_control)
+pca_reg_100<- caret::train(GA~., data=data_train_GA_pca_100, method = "glm", family = "gaussian", trControl= reg_control)
+```
+
+```{r}
+
+regression_models <- c("FS_100", "FS_500", "Feser.1", "Feser.inf","PCA_5", "PCA_25", "PCA_100")
+regression_RMSE <- c(FS_reg_100$results$RMSE, FS_reg_500$results$RMSE, Feser_reg_cor$results$RMSE,inf_reg$results$RMSE,pca_reg_5$results$RMSE,pca_reg_25$results$RMSE, pca_reg_100$results$RMSE)
+regression_sum <- cbind(regression_models, regression_RMSE)
+```
+
+
+```{r}
+RF_reg100 <- caret::train(GA~., data=data_train_GA_rf_top100, method = "glm", family = "gaussian", trControl= reg_control)
+RF_reg500 <- caret::train(GA~., data=data_train_GA_rf_top500, method = "glm", family = "gaussian", trControl= reg_control)
+RF_reg1000 <- caret::train(GA~., data=data_train_GA_rf_top1000, method = "glm", family = "gaussian", trControl= reg_control)
+
+```
+
+
+
+```{r}
+RF_reg100
+RF_reg500
+RF_reg1000
+```
+
+```{r}
+regression_sum
+```
+
+
+
+
+Not so hot, lets try more sophisticated regression techniques, like SVM
+
+
+```{r}
+str(data_train_GA_lc_top100)
+```
+
+```{r}
+reg_control <-  trainControl(method = "repeatedcv", repeats = 5, number = 5)
+class_control <- trainControl(method= "repeatedcv", repeats = 5, number = 5, classProbs = T, savePredictions = T)
+```
+
+```{r}
+SVM_GA_100 <- caret::train(GA~., data=data_train_GA_lc_top100, method= "svmLinear", trControl = reg_control)
+SVM_GA_500 <- caret::train(GA~., data=data_train_GA_lc_top500, method= "svmLinear", trControl = reg_control)
+
+```
+
+```{r}
+SVM_rf_100 <- caret::train(GA~., data=data_train_GA_rf_top100, method= "svmLinear", trControl = reg_control)
+
+SVM_rf_500 <- caret::train(GA~., data=data_train_GA_rf_top500, method= "svmLinear", trControl = reg_control)
+
+SVM_rf_1000 <- caret::train(GA~., data=data_train_GA_rf_top1000, method= "svmLinear", trControl = reg_control)
+```
+
+
+```{r}
+SVM_rf_r_100 <- caret::train(GA~., data=data_train_GA_rf_top100, method= "svmRadial", trControl = reg_control)
+
+SVM_rf_r_500 <- caret::train(GA~., data=data_train_GA_rf_top500, method= "svmRadial", trControl = reg_control)
+
+SVM_rf_r_1000 <- caret::train(GA~., data=data_train_GA_rf_top1000, method= "svmRadial", trControl = reg_control)
+```
+
+
+
+```{r}
+SVM_rf_100
+SVM_rf_r_100
+SVM_rf_500
+SVM_rf_r_500
+SVM_rf_1000
+SVM_rf_r_1000
+
+```
+
+
+
+
+```{r}
+SVM_GA_Feser <- caret::train(GA~., data=data_train_GA_fescor, method= "svmLinear", trControl = reg_control)
+
+```
+
+```{r}
+SVM_GA_inf<- caret::train(GA~., data=data_train_GA_inf_top10, method= "svmLinear", trControl = reg_control)
+```
+
+
+```{r}
+SVM_GA_pca_5 <- caret::train(GA~., data=data_train_GA_pca_5, method= "svmLinear", trControl = reg_control)
+SVM_GA_pca_100 <- caret::train(GA~., data=data_train_GA_pca_100, method= "svmLinear", trControl = reg_control)
+```
+
+*FS_reg_100
+FS_reg_500
+*Feser_reg_10
+Feser_reg_100
+*Feser_reg_1000
+*inf_reg
+*pca_reg_5
+pca_reg_25
+*pca_reg_100
+```{r}
+SVM_GA_100
+SVM_GA_500
+SVM_GA_Feser
+SVM_GA_inf
+SVM_GA_pca_5
+SVM_GA_pca_100
+```
+
+
+Now try radial 
+
+
+```{r}
+reg_control <-  trainControl(method = "repeatedcv", repeats = 5, number = 5)
+class_control <- trainControl(method= "repeatedcv", repeats = 5, number = 5, classProbs = T, savePredictions = T)
+```
+
+```{r}
+SVM_r_GA_100 <- caret::train(GA~., data=data_train_GA_lc_top100, method= "svmRadial", trControl = reg_control)
+SVM_r_GA_500 <- caret::train(GA~., data=data_train_GA_lc_top500, method= "svmRadial", trControl = reg_control)
+SVM_r_GA_1000 <- caret::train(GA~., data=data_train_GA_lc_top1000, method= "svmRadial", trControl = reg_control)
+```
+
+```{r}
+SVM_r_GA_Feser <- caret::train(GA~., data=data_train_GA_fescor, method= "svmRadial", trControl = reg_control)
+
+```
+
+```{r}
+SVM_r_GA_inf<- caret::train(GA~., data=data_train_GA_inf_top10, method= "svmRadial", trControl = reg_control)
+```
+
+```{r}
+SVM_r_GA_pca_5 <- caret::train(GA~., data=data_train_GA_pca_5, method= "svmRadial", trControl = reg_control)
+SVM_r_GA_pca_100 <- caret::train(GA~., data=data_train_GA_pca_100, method= "svmRadial", trControl = reg_control)
+```
+
+
+```{r}
+SVM_r_GA_100
+SVM_GA_100
+SVM_r_GA_500
+SVM_GA_500
+SVM_r_GA_Feser
+SVM_GA_Feser
+SVM_r_GA_pca_5
+SVM_r_GA_pca_100
+SVM_r_GA_1000
+```
+
+Still not so hot. How about random forest?
+
+```{r}
+control_rf_term <- trainControl(method="repeatedcv", number = 5, repeats = 5, classProbs = T, savePredictions = T)
+control_rf_GA <- trainControl(method="repeatedcv", number = 5, repeats = 5)
+
+```
+
+
+```{r}
+rf_term_100 <- caret::train(term~., data= data_train_term_chi_top100, method = "rf", trControl = control_rf_term)
+rf_term_500 <- caret::train(term~., data= data_train_term_chi_top500, method = "rf", trControl = control_rf_term)
+
+```
+
+```{r}
+rf_GA_100 <- caret::train(GA~., data= data_train_GA_lc_top100, method = "rf", trControl = control_rf_GA)
+rf_GA_500 <- caret::train(GA~., data= data_train_GA_lc_top500, method = "rf", trControl = control_rf_GA)
+rf_GA_1000 <- caret::train(GA~., data= data_train_GA_lc_top1000, method = "rf", trControl = control_rf_GA)
+
+```
+
+```{r}
+rf_feser <- caret::train(GA~.RF, data= data_train_GA_fescor, method="ranger", trControl=control_rf_GA)
+```
+
+
+```{r}
+rf_term_inf <- caret::train(term~., data= data_train_term_inf_top10, method = "rf", trControl = control_rf_term)
+rf_GA_inf <- caret::train(GA~., data= data_train_GA_inf_top10, method = "rf", trControl = control_rf_GA)
+```
+
+
+```{r}
+rf_GA_pca_5 <- caret::train(GA~., data= data_train_GA_pca_5, method = "rf", trControl = control_rf_GA)
+rf_GA_pca_25 <- caret::train(GA~., data= data_train_GA_pca_25, method = "rf", trControl = control_rf_GA)
+rf_GA_pca_100 <-  caret::train(GA~., data= data_train_GA_pca_100, method = "rf", trControl = control_rf_GA) 
+```
+
+
+```{r}
+ranger_kaboodle <- ranger(dependent.variable.name="GA", data= data_train_rownames_GA, importance = "impurity",  num.trees= 10000, mtry = 500)
+
+```
+
+
+
+```{r}
+rf_GA_100
+rf_GA_500
+rf_GA_1000
+rf_GA_pca_5
+rf_GA_pca_100
+rf_feser
+ranger_kaboodle
+```
+
+
+```{r}
+sqrt(53.76)
+```
+
+
+```{r}
+ranger_kaboodle
+rang_imps <- ranger::importance(ranger_kaboodle)
+```
+
+
+```{r}
+df_rimps <- as.data.frame(rang_imps)
+```
+
+
+```{r}
+#df_rimps <- rownames_to_column(df_rimps)
+#df_rimps <- dplyr::rename(df_rimps, Gene = rowname )
+df_rimp_ordered<- df_rimps %>% arrange(desc(rang_imps))
+str(df_rimp_ordered)
+```
+
+
+
+
+```{r}
+rf_top100 <- df_rimp_ordered[1:100,]
+rf_top100 <- rf_top100$Gene
+rf_top500 <- df_rimp_ordered[1:500,]
+rf_top500 <- rf_top500$Gene
+rf_top1000 <- df_rimp_ordered[1:1000,]
+rf_top1000 <- rf_top1000$Gene
+
+```
+
+
+```{r}
+data_train_GA_rf_top100 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= rf_top100))
+data_train_GA_rf_top100 <- dplyr::rename(data_train_GA_rf_top100, GA= data_train_GA.GA )
+data_train_GA_rf_top500 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= rf_top500))
+data_train_GA_rf_top500 <- dplyr::rename(data_train_GA_rf_top500, GA= data_train_GA.GA)
+data_train_GA_rf_top1000 <- data.frame(data_train_GA$GA, subset(data_train_GA, select= rf_top1000))
+data_train_GA_rf_top1000 <- dplyr::rename(data_train_GA_rf_top1000, GA= data_train_GA.GA)
+```
+
+```{r}
+ggplot(data=rang_imps_ordered,aes(x=rowname, y= rang_imps))+geom_point()+xlim(0,1000)
+
+
+
+```
+
+```{r}
+data_train_GA_rf_top100[1:5,1:10]
+```
+
+
+
+Okay. Still not so hot. I think we've got a crappy feature set, so how about better feature engineering? 
+
+Shall we try RFE? 
+
+1a) LASSO, bitches
+3. SVM for classification and regression
+4. LDA for classification
+5. Random Forest for GA and TERM
+
+6. RFE on larger dataset
+
+
+Lets try lasso: 
+
+
+```{r}
+lasso_control <-  trainControl(method = "repeatedcv", repeats = 10, number = 5)
+```
+
+
+```{r}
+lasso_rf_100 <- caret::train(GA~., data=data_train_GA_rf_top100, method= "lasso", trControl = lasso_control)
+lasso_rf_1000 <- caret::train(GA~., data=data_train_GA_rf_top1000, method= "lasso", 
+trControl = lasso_control)
+```
+
+
+
+```{r}
+lasso_GA_100 <- caret::train(GA~., data=data_train_GA_lc_top100, method= "lasso", trControl = lasso_control)
+lasso_GA_1000 <- caret::train(GA~., data=data_train_GA_lc_top1000, method= "lasso", trControl = lasso_control)
+```
+
+
+```{r}
+lasso_pca_100  <- caret::train(GA~., data=data_train_GA_pca_100, method= "lasso", trControl = lasso_control)
+
+```
+
+```{r}
+
+lasso_GA_100
+lasso_GA_1000
+lasso_pca_100
+```
+
+
+Lasso works pretty well it seems, so how about elastic net? 
+
+
+okay elastic net and lasso and ridge properly 
+
+```{r}
+data_train_GA_rf_label <- data_train_GA_rf_top100 %>% select("GA")
+#data_train_rownames_term_label <-data_train_rownames_term %>% select("term")
+data_train_GA_rf_100_no_label <- data_train_GA_rf_top100 %>% select(-"GA")
+data_train_GA_rf_500_no_label <- data_train_GA_rf_top500 %>% select(-"GA")
+data_train_GA_rf_1000_no_label <- data_train_GA_rf_top1000 %>% select(-"GA")
+GA_rf100_no_lab_mat <- data.matrix(data_train_GA_rf_100_no_label, rownames.force = TRUE)
+GA_rf500_no_lab_mat <- data.matrix(data_train_GA_rf_500_no_label, rownames.force = TRUE) 
+GA_rf1000_no_lab_mat <- data.matrix(data_train_GA_rf_1000_no_label, rownames.force = TRUE)
+
+GA_rf_lab_mat <- data.matrix(data_train_GA_rf_label, rownames.force = TRUE)
+
+```
+
+```{r}
+ridge_fit_rf100 = cv.glmnet(x = scale(GA_rf100_no_lab_mat), y = GA_lab_mat, alpha = 0)
+ridge_fit_rf500 = cv.glmnet(x = scale(GA_rf500_no_lab_mat), y = GA_lab_mat, alpha = 0)
+ridge_fit_rf1000 = cv.glmnet(x = scale(GA_rf1000_no_lab_mat), y = GA_lab_mat, alpha = 0)
+```
+
+
+```{r}
+ridge_fit_rf100 
+ridge_fit_rf500 
+ridge_fit_rf1000
+```
+
+
+```{r}
+lasso_fit_rf100 = cv.glmnet(x = scale(GA_rf100_no_lab_mat), y = GA_lab_mat, alpha = 1)
+lasso_fit_rf500 = cv.glmnet(x = scale(GA_rf500_no_lab_mat), y = GA_lab_mat, alpha = 1)
+lasso_fit_rf1000 = cv.glmnet(x = scale(GA_rf1000_no_lab_mat), y = GA_lab_mat, alpha = 1)
+```
+
+
+```{r}
+lasso_fit_rf100
+lasso_fit_rf500
+lasso_fit_rf1000
+```
+
+```{r}
+sqrt(33.13)
+```
+
+```{r}
+elastic_control <-  `train`Control(method = "cv", number = 5)
+```
+
+
+
+```{r}
+elastic_rf_100 <- caret::train(GA~., data=data_train_rf_lc_top100, method= "glmnet", trControl = elastic_control, tuneLength=10)
+elastic_rf_pca_100 <- caret::train(GA~., data=data_train_rf_pca_100, method= "glmnet", trControl = elastic_control, tuneLength=10)
+```
+
+```{r}
+elastic_GA_100
+elastic_GA_pca_100
+```
+
+
+
+# Here we try LDA
+
+
+```{r}
+san_LDA <- train(term~., data=data_san_term, method= "lda", trControl = control_rf_term)
+```
+
+# SVM
+
+# Linear
+
+#radial
+
+
+#ranger
+```{r}
+rf_san_ranger_term <-train(term~., data= data_san_term, method = "ranger", trControl = control_rf_term)
+```
+
+
+```{r}
+rf_san_ranger_GA <-train(GA~., data= data_san_GA, method = "ranger", trControl = control_rf_GAw)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+#```{r} 
+#write.table(data_df, "GAtext.txt", sep = "\t", row.names = FALSE, col.names = TRUE, quote=F)
+#```
+
+#Feature selection 
+
+#Todo: feed PCA'd data to lasso
+#Todo: Consider ICA
+#Todo: Run random forest and SVM, consider LDA
+
+#randomforest
+# still w/ stack overflow on 16 cores at 4 per. ..
+
+
+
+#feature selection with univariate filtering
+
+#fselector 
+#using correlation
+
+```{r}
+lctest <- linear.correlation(GA~., data_san_GA)
+```
+
+```{r}
+str(lctest)
+```
+
+
+
+#lets try boruta
+
+```{r}
+boruta_test <- Boruta(as.factor(term)~., data_san_term, doTrace=2 )
+```
+
+random forest: 
+
+
+```{r}
+rf_san_GA <- train(GA~., data= data_san_GA, method = "rf", trControl = control_rf_GA)
+
+```
+
+```{r}
+rf_imp<- varImp(rf_san_term, scale= FALSE)
+```
+
+```{r}
+rfitest2 <- rownames_to_column(rf_imp)
+rfitest2 <- rename(rfitest2, gene = rowname)
+rfitest_ordered <- rfitest2 %>% arrange(desc(attr_importance))
+rfi_top100 <- rfitest_ordered[1:100,]
+rfi_top200 <- rfitest_ordered[1:200,]
+rfi_top500 <- rfitest_ordered[1:500,]
+#rfi_top1000 <- rfitest_ordered[1:1000,]
+```
+
+
+```{r}
+rfi_100 <- rfi_top100$gene
+rfi_200 <- rfi_top200$gene
+rfi_500 <- rfi_top500$gene
+#rfi_1000 <- rfi_top1000$gene
+
+data_san_term_rfi_top100 <- subset(data_san_term, select= rfi_100)
+data_san_term_rfi_top200 <- subset(data_san_term, select= rfi_200)
+data_san_term_rfi_top500 <- subset(data_san_term, select= rfi_500)
+#data_san_term_rfi_top1000 <- subset(data_san_term, select= rfi_1000)
+
+
+```
+
+#failed
+
+```{r}
+rf_imp <- random.forest.importance(term~., data= data_san_term, importance.type = 1)
+```
+
+
+```{r}
+class(data_san_term)
+```
+
+
+
+RFE? or after? 
+
+
+
+
+### trying feser
+This seems to be very good in that it dumps a huge number of things. We're down 3k features with this alone. 
+
+The next question is whether we should remove minimal variance 
+
+```{r}
+output <- filter.corr(features= GA_no_lab_mat, class = GA_lab_mat, mincorr = 0.1)
+```
+
+
+
+
+
+
+
+```{r}
+control_rf_term <- trainControl(method="repeatedcv", number = 5, repeats = 5, classProbs = T, savePredictions = T)
+control_rf_GA <- trainControl(method="repeatedcv", number = 5, repeats = 5)
+
+```
+
+
+#regression 
+#Logistic
+
+OKAY! BUILD MODELS!
+
+1. Regression against age
+```{r}
+
+```
+1a) LASSO, bitches
+
+2. Logistic Regression for term 
+
+3. SVM 
+4. LDA
+5. Random Forest for GA and TERM
+6. RFE on larger dataset
+
+```{r}
+san_glm_log <- train(term~., data=data_san_term, method= "glm", family= "binomial", trControl = control_rf_term)
+
+```
+
+```{r}
+san_glm_lin <- train(GA~., data=data_san_GA, method= "glm", family= "gaussian", trControl = control_rf_term)
+
+```
+
+
+#random forest
+
+```{r}
+rf_imp<- varImp(rf_san_term, scale= FALSE)
+```
+
+
+
+```{r}
+rfitest2 <- rownames_to_column(rf_imp)
+rfitest2 <- rename(rfitest2, gene = rowname)
+rfitest_ordered <- rfitest2 %>% arrange(desc(attr_importance))
+rfi_top100 <- rfitest_ordered[1:100,]
+rfi_top200 <- rfitest_ordered[1:200,]
+rfi_top500 <- rfitest_ordered[1:500,]
+#rfi_top1000 <- rfitest_ordered[1:1000,]
+```
+
+
+```{r}
+rfi_100 <- rfi_top100$gene
+rfi_200 <- rfi_top200$gene
+rfi_500 <- rfi_top500$gene
+#rfi_1000 <- rfi_top1000$gene
+
+data_san_term_rfi_top100 <- subset(data_san_term, select= rfi_100)
+data_san_term_rfi_top200 <- subset(data_san_term, select= rfi_200)
+data_san_term_rfi_top500 <- subset(data_san_term, select= rfi_500)
+#data_san_term_rfi_top1000 <- subset(data_san_term, select= rfi_1000)
+
+
+```
+
+using caret's built in sbf, not great
+```{r}
+sbf_filter_control <- sbfControl(functions = rfSBF, method ="repeatedcv", number = 5, repeats= 5)
+testsbf <- sbf(term~.,data = data_san_term, sbfControl = sbf_filter_control)
+```
+
+
+```{r}
+
+```
+
+
+#LDA 
+# not normalized or scaled
+#remove collinearity?
+
+
+
+
+
+```
+
+```{r}
+rfterm = ranger(GA~., data = data_train_GA[1:3,],  mtry= 1000, num.trees= 1000, min.node.size = 10000, save.memory = TRUE)
+save(rftrainGA, file= "rftrain.RData")
+
+```
+
+
+#LDA on term vs. 
+
+
+```{r}
+data_train_term_rn <- data_train_term %>% column_to_rownames(.,var = "SampleID")
+```
+
+
+```{r}
+lda_test <- lda(term ~., data= data_train_term_rn)
+```
+
+
+
+4. Test model on test set 
+```{r}
+#predict the species of the test data
+LDA_predict <- predict(LDA, newdata=test_classifier)
+confusionMatrix(LDA_predict$class, reference = test_classifier$Species)
+```
+
+#svm
+
+```{r}
+
+```
+
+
+
+New todo list: 
+
+-feature selection
+- use built in caret univariate filtration
+- pca
+- other? 
+
+- tuning grid for ranger
+
+Clip low variance features .
+Consider Geseq
+
+Demoted code chunks
+
+Attaches lc correlation scores to GA data frame
+
+
+```{r}
+lctest_transpose <- as.data.frame(t(lctest))
+dummyGA <- data.frame("GA" =0)
+lctest_transpose <- cbind(dummyGA, lctest_transpose)
+data_san_GA_lc <- rbind(lctest_transpose, data_san_GA)
+data_san_GA_lc[1:20,1:20]
+```
+
+using caret's built in sbf, not great
+```{r}
+filter_control <- sbfControl(functions = lmSBF, method ="repeatedcv", number = 5, repeats= 5)
+testsbf <- sbf(GA~.,data = data_san_GA, sbfControl = filter_control)
+```
+
+```{r}
+testsbf
+```
+
+
+
+```{r}
+GA_no_lab_mat <- data.matrix(data_san_GA_no_label, rownames.force = TRUE)
+GA_lab_mat <- data.matrix(data_san_GA_label, rownames.force = TRUE)
+```
+
+```{r}
+rownames(data_san_GA_no_label)
+```
+
+
+```{r}
+rownames(GA_no_lab_mat)
+```
+
+
+```{r}
+nzv <- nearZeroVar(GA_no_lab_mat, saveMetrics = TRUE)
+```
+
+
+
+```{r}
+str(colvar)
+```
+
+```{r}
+colvar <-  as.data.frame(colVars(GA_no_lab_mat))
+colvar <-  rownames_to_column(colvar)
+names(colvar)[names(colvar) == "colVars(GA_no_lab_mat)"] <- "variance"
+colvar <- colvar[order(-colvar$variance),]
+```
+
+
+
+
+```{r}
+data_san_GA_label <- data_san_GA %>% select("GA")
+data_san_term_label <-data_san_term %>% select("term")
+```
+
+```{r}
+data_san_GA_no_label <- data_san_GA %>% select(-"GA")
+data_san_term_no_label <- data_san_term %>% select(-"term")
+```
+
+
+
+#sanity check
+
+```{r}
+data_san_term <- data_train_term[,1:1000]
+data_san_GA <- data_train_GA[,1:1000]
+```
+
+```{r}
+data_san_term <- data_san_term %>% select(-"SampleID")
+data_san_GA <- data_san_GA %>% select(-"SampleID")
+
+```
+
+```{r}
+#convert numeric scoring to factor for term
+data_san_term$term <- factor(data_san_term$term)
+data_san_term <- data_san_term %>% mutate(term = ifelse(term==1, "yes", "no"))
+```
+
+```{r}
+data_san_GA_label <- data_san_GA %>% select("GA")
+data_san_term_label <-data_san_term %>% select("term")
+```
+
+```{r}
+data_san_GA_no_label <- data_san_GA %>% select(-"GA")
+data_san_term_no_label <- data_san_term %>% select(-"term")
+```

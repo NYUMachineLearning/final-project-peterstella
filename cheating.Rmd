@@ -1,0 +1,173 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(plyr)
+library(elasticnet) 
+library(glmnet)
+library(SummarizedExperiment)
+library(listdtr)
+```
+
+```{r}
+load('C:\\Users\\pstel\\OneDrive\\Desktop\\MachineLearning2019\\Preterm Birth\\HTA20_RMA.RData')
+anoSC1=read.csv("C:\\Users\\pstel\\OneDrive\\Desktop\\MachineLearning2019\\Preterm Birth\\anoSC1_v11_nokey.csv",stringsAsFactors = FALSE)
+data_df <- as.data.frame(eset_HTA20)
+```
+
+
+```{r }
+row_data = data.frame(geneID = rownames(eset_HTA20))
+rownames(row_data) = rownames(eset_HTA20)
+
+assay_data = eset_HTA20
+
+rownames(anoSC1) = as.character(anoSC1$SampleID)
+col_data = anoSC1[colnames(assay_data), ]
+rownames(col_data) = as.character(col_data$SampleID)
+
+se = SummarizedExperiment(
+    assays = list(exprs = assay_data),
+    colData = col_data,
+    rowData = row_data)
+se
+ rm("row_data", "assay_data", "col_data")
+
+```
+
+
+```{r}
+control_geneIDs = rownames(eset_HTA20)[c(32800:32830)]
+se = se[!(rownames(se) %in% control_geneIDs)]
+
+```
+
+
+```{r eval=FALSE}
+se_train = se[ , colData(se)$Train == 1]
+se_test = se[ , colData(se)$Train == 0]
+
+ridge_fit_cv = cv.glmnet(x = scale(t(assay(se_train))), y = colData(se_train)$GA, alpha = 0)
+plot(ridge_fit_cv)
+ridge_coeff = coef(ridge_fit_cv, s = ridge_fit_cv$lambda.1se) %>% as.matrix() %>% data.frame()
+ridge_coeff = mutate(ridge_coeff, geneID = rownames(ridge_coeff), symbol = c("Intercept", rowData(se_train)$symbol %>% as.character()))
+head(arrange(ridge_coeff, desc(abs(X1))))
+
+
+ridge_fit = glmnet(x = scale(t(assay(se_train))), y = colData(se_train)$GA, alpha = 0)
+
+GA_predicted_train = predict(ridge_fit, s = which.min(abs(ridge_fit$lambda - ridge_fit_cv$lambda.1se)), newx = scale(t(assay(se_train))))
+df_predicted_train = data.frame(GA_predicted_train, colData(se_train)$GA)
+
+
+GA_predicted_test = predict(ridge_fit, s = which.min(abs(ridge_fit$lambda - ridge_fit_cv$lambda.1se)), newx = scale(t(assay(se_test))))
+submission = data.frame(SampleID = rownames(GA_predicted_test), GA = round(as.numeric(GA_predicted_test), 1))
+
+sqrt(ridge_fit_cv$cvm[which.min(abs(ridge_fit_cv$lambda - ridge_fit_cv$lambda.1se))])
+```
+
+
+
+
+test spca function 
+
+```{r}
+afd <- spca(scale(GA_no_lab_mat),  K = 25, para = seq(.01, .25, by = .01), type = "predictor", sparse = "penalty",  lambda = 1e-6)
+```
+
+
+```{r}
+afd
+```
+
+
+
+```{r}
+df_v = data.frame(afd$loadings)
+gene_ind = apply(df_v, 1, function(x){sum(abs(x) > 0) >= 1}); sum(gene_ind)
+```
+
+
+
+```{r}
+spca_sel <- (GA_no_lab_mat[,which(gene_ind)])
+spca_test <- GA_test_no_lab_mat[,which(gene_ind)]
+```
+
+
+```{r}
+str(spca_sel)
+str(GA_lab_mat)
+```
+
+
+```{r}
+ridge_fit_cv_spca = cv.glmnet(x = spca_sel, y = GA_lab_mat, alpha = 0, nfolds = 10, standardize = FALSE)
+```
+
+```{r}
+ridge_fit_spca = glmnet(x = spca_sel, y = GA_lab_mat, alpha = 0, standardize = FALSE)
+
+GA_predicted_train = predict(ridge_fit_spca, s = which.min(abs(ridge_fit_spca$lambda - ridge_fit_cv_spca$lambda.1se)), newx = spca_sel))
+df_predicted_train = data.frame(GA_predicted_train, GA_lab_mat)
+
+```
+
+
+```{r}
+ridge_fit_cv_spca
+```
+
+```{r}
+sqrt(ridge_fit_cv_spca$cvm[which.min(abs(ridge_fit_cv_spca$lambda - ridge_fit_cv_spca$lambda.min))])
+
+```
+
+
+
+```{r}
+
+GA_predicted_test = predict(ridge_fit_spca, s = which.min(abs(ridge_fit_spca$lambda - ridge_fit_cv_spca$lambda.1se)), newx = spca_test)
+GA_predict_enet <-  data.frame(SampleID = rownames(GA_predicted_test), GA = round(as.numeric(GA_predicted_test), 1))
+```
+
+
+
+```{r}
+plot(ridge_fit_cv_spca)
+
+```
+
+```{r}
+se_train = se[ , colData(se)$Train == 1]
+se_test = se[ , colData(se)$Train == 0]
+
+spca_res1 = spca(scale(t(assay(se_train))), K = 25, para = seq(.01, .25, by = .01), type = "predictor", sparse = "penalty",  lambda = 1e-6)
+
+saveRDS(spca_res1, "/gpfs/scratch/pas376/spca_res_K25.rds")
+
+spca_res2 = spca(scale(t(assay(se_train))), K = 20, para = seq(.01, .20, by = .01), type = "predictor", sparse = "penalty",  lambda = 1e-6)
+
+#saveRDS(spca_res, "./Results_All/spca_res_K20.rds")
+
+spca_res3 = spca(scale(t(assay(se_train))), K = 30, para = seq(.01, .3, by = .01), type = "predictor", sparse = "penalty",  lambda = 1e-6)
+
+#saveRDS(spca_res, "./Results_All/spca_res_K30.rds")
+
+spca_res4 = spca(scale(t(assay(se_train))), K = 40, para = seq(.01, .40, by = .01), type = "predictor", sparse = "penalty",  lambda = 1e-6)
+
+#saveRDS(spca_res, "./Results_All/spca_res_K40.rds") 
+
+```
+
+
+
+
+
